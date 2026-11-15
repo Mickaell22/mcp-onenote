@@ -39,8 +39,11 @@ class _HTMLaMD(HTMLParser):
 
     @staticmethod
     def _de_style(style: str) -> set[str]:
-        s = style.replace(" ", "").lower()
+        # OneNote parte las líneas largas del HTML ("font-weight:" y "bold" en líneas distintas)
+        s = re.sub(r"\s+", "", style).lower()
         out = set()
+        if re.search(r"font-family:['\"]?(consolas|couriernew|courier|lucidaconsole|cascadia)", s):
+            out.add("c")
         if "font-weight:bold" in s:
             out.add("b")
         if "font-style:italic" in s:
@@ -73,6 +76,8 @@ class _HTMLaMD(HTMLParser):
             self._enlace.pop()
 
     def handle_data(self, data: str) -> None:
+        # Como en HTML, los saltos de línea del código fuente son espacios (los reales son <br>)
+        data = data.replace("\r", "").replace("\n", " ")
         self.segmentos.append((data, self._estilos[-1], self._enlace[-1]))
 
     def markdown(self) -> str:
@@ -92,6 +97,8 @@ class _HTMLaMD(HTMLParser):
             ini = texto[: len(texto) - len(texto.lstrip())]
             fin = texto[len(texto.rstrip()):]
             nucleo = texto.strip()
+            if "c" in est:
+                nucleo = f"`{nucleo}`"
             if enl:
                 nucleo = f"[{nucleo}]({enl})"
             if "s" in est:

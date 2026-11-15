@@ -108,3 +108,11 @@ def test_adjuntos_y_tinta():
       <one:OE><one:InkParagraph><one:InkWord recognizedText="hola"/></one:InkParagraph></one:OE>""")))
     assert "[📎 Archivo adjunto: tarea.pdf]" in p.markdown
     assert "escrito a mano: «hola»" in p.markdown
+
+
+def test_html_partido_en_varias_lineas_como_lo_guarda_onenote():
+    html = ("<span\nstyle='font-family:Calibri' lang=es-EC>Texto con </span><span style='font-weight:\n"
+            "bold;font-family:Calibri' lang=en-US>negrita</span><span style='font-family:\nCalibri'>, </span>"
+            "<span style='font-family:Consolas'>c</span><span style='font-family:Consolas' lang=x-none>ó</span>"
+            "<span style='font-family:Consolas'>digo</span>")
+    assert html_a_md(html) == "Texto con **negrita**, `código`"

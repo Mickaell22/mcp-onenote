@@ -12,7 +12,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
-from . import busqueda, imagenes, lectura
+from . import busqueda, escritura, imagenes, lectura
 from . import jerarquia as jq
 from .com import BINARIO_NO_DESCARGADO, OneNote, OneNoteError, es_codigo
 
@@ -338,6 +338,52 @@ async def buscar(
     if errores:
         msg += f"\n\n({errores} página(s) no se pudieron leer, p. ej. por estar en secciones bloqueadas.)"
     return msg
+
+
+# ---------- herramientas: escritura (solo crea o añade; nunca borra) ----------
+
+ESCRITURA = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=False)
+
+AYUDA_MARKDOWN = (
+    "Markdown admitido: '# Título' (1-6), '- viñetas', '1. numeradas', '- [ ] tarea' / '- [x] hecha', "
+    "**negrita**, *cursiva*, ~~tachado~~, `código`, bloques ```, [enlaces](https://…), tablas '| a | b |' "
+    "y sangría de 2 espacios para anidar."
+)
+
+
+@mcp.tool(annotations=ESCRITURA)
+@amable
+async def crear_pagina(
+    seccion: Annotated[str, Field(description="Sección donde crearla: nombre, ruta ('Cuaderno / Sección') o ID.")],
+    titulo: Annotated[str, Field(description="Título de la página.")],
+    contenido: Annotated[str, Field(description="Contenido en Markdown. " + AYUDA_MARKDOWN)] = "",
+) -> str:
+    """Crea una página nueva en una sección de OneNote con el contenido indicado."""
+    sec = await resolver(seccion, "seccion")
+    if sec.bloqueada:
+        raise OneNoteError(f"La sección '{sec.ruta}' está bloqueada con contraseña.")
+    pid = await onenote.llamar(onenote.nueva_pagina(sec.id))
+    await onenote.llamar(onenote.actualizar_pagina(escritura.xml_nueva_pagina(pid, titulo, contenido)))
+    invalidar_cache()
+    return f"Página creada: {sec.ruta} / {titulo}\nID: {pid}"
+
+
+@mcp.tool(annotations=ESCRITURA)
+@amable
+async def agregar_a_pagina(
+    pagina: Annotated[str, Field(description="Página: nombre, ruta parcial o ID.")],
+    contenido: Annotated[str, Field(description="Contenido a añadir al final, en Markdown. " + AYUDA_MARKDOWN)],
+) -> str:
+    """Añade contenido al final de una página existente, sin modificar lo que ya tiene."""
+    nodo = await resolver(pagina, "pagina")
+    actual = await onenote.llamar(onenote.contenido(nodo.id))
+    try:
+        xml = escritura.xml_agregar(actual, contenido)
+    except ValueError as e:
+        raise OneNoteError(str(e)) from e
+    await onenote.llamar(onenote.actualizar_pagina(xml))
+    invalidar_cache()
+    return f"Contenido añadido al final de: {nodo.ruta}"
 
 
 def main() -> None:
