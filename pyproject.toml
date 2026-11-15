@@ -25,7 +25,7 @@ dependencies = [
 onenote-mcp = "onenote_mcp.server:main"
 
 [project.urls]
-Repository = "https://github.com/Mickaell22/onenote-mcp"
+Repository = "https://github.com/Mickaell22/mcp-onenote"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/onenote_mcp"]
