@@ -29,3 +29,9 @@ Repository = "https://github.com/Mickaell22/onenote-mcp"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/onenote_mcp"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

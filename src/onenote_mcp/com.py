@@ -159,6 +159,24 @@ class OneNote:
         return fn
 
     @staticmethod
+    def binario(pagina_id: str, callback_id: str) -> Callable[[Any, Any], str]:
+        """Contenido binario (base64) de una imagen o archivo de la página."""
+        def fn(app: Any, mod: Any) -> str:
+            return app.GetBinaryPageContent(pagina_id, callback_id)
+        return fn
+
+    @staticmethod
+    def pagina_actual() -> Callable[[Any, Any], str | None]:
+        """ID de la página que el usuario tiene abierta en OneNote (o None)."""
+        def fn(app: Any, mod: Any) -> str | None:
+            try:
+                ventana = app.Windows.CurrentWindow
+                return ventana.CurrentPageId if ventana is not None else None
+            except Exception:  # noqa: BLE001 - sin ventana abierta
+                return None
+        return fn
+
+    @staticmethod
     def actualizar_pagina(xml: str) -> Callable[[Any, Any], None]:
         def fn(app: Any, mod: Any) -> None:
             app.UpdatePageContent(xml, 0, mod.xs2013, False)
@@ -181,6 +199,20 @@ class OneNote:
         def fn(app: Any, mod: Any) -> None:
             app.NavigateTo(objeto_id, "", False)
         return fn
+
+
+# El binario (imagen/archivo) aún no está en el equipo: OneNote lo descarga al abrir la página
+BINARIO_NO_DESCARGADO = 0x8004200F
+
+
+def es_codigo(e: BaseException, codigo: int) -> bool:
+    actual = e
+    while actual is not None:
+        h = _hresult(actual)
+        if h is not None and (h & 0xFFFFFFFF) == codigo:
+            return True
+        actual = actual.__cause__  # type: ignore[assignment]
+    return False
 
 
 def _hresult(e: BaseException) -> int | None:
@@ -206,6 +238,7 @@ _ERRORES_ONENOTE = {
     0x80042015: "El cuaderno no existe o no está abierto en OneNote.",
     0x8004201B: "La sección está protegida con contraseña y bloqueada. Desbloquéala en OneNote.",
     0x8004201D: "El contenido aún no se ha sincronizado. Abre OneNote y espera a que termine de sincronizar.",
+    0x8004200F: "La imagen o archivo aún no está descargado en este equipo.",
     0x8004201F: "Error de red al acceder al cuaderno.",
 }
 

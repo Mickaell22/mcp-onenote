@@ -2,17 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
 import functools
 import time
 from typing import Annotated, Any, Awaitable, Callable, TypeVar
 
-from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver import Image, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
+from . import imagenes, lectura
 from . import jerarquia as jq
-from .com import OneNote, OneNoteError
+from .com import BINARIO_NO_DESCARGADO, OneNote, OneNoteError, es_codigo
 
 INSTRUCCIONES = """\
 Acceso a los cuadernos de OneNote de escritorio del usuario (Windows).
@@ -136,6 +138,146 @@ async def abrir_en_onenote(
         nodo = await resolver(elemento, "seccion")
     await onenote.llamar(onenote.navegar(nodo.id))
     return f"Abierto en OneNote: {nodo.ruta}"
+
+
+# ---------- herramientas: lectura ----------
+
+MAX_BYTES_IMAGENES = 4_000_000  # tope total por respuesta, para no saturar el contexto
+
+
+async def _cargar_pagina(ref: str) -> tuple[jq.Nodo, lectura.Pagina]:
+    nodo = await resolver(ref, "pagina")
+    xml = await onenote.llamar(onenote.contenido(nodo.id))
+    return nodo, lectura.leer_pagina(xml)
+
+
+async def _descargar_pagina(nodo: jq.Nodo) -> None:
+    """En cuadernos de la nube OneNote no baja las imágenes hasta que se abre la página.
+
+    Se abre la página un momento en la ventana de OneNote y luego se vuelve a la que el
+    usuario tenía abierta.
+    """
+    anterior = await onenote.llamar(onenote.pagina_actual())
+    await onenote.llamar(onenote.navegar(nodo.id))
+    _descargadas.add(nodo.id)
+    if anterior and anterior != nodo.id:
+        _volver_a[nodo.id] = anterior
+
+
+_descargadas: set[str] = set()
+_volver_a: dict[str, str] = {}
+
+
+async def _volver(nodo: jq.Nodo) -> None:
+    anterior = _volver_a.pop(nodo.id, None)
+    if anterior:
+        try:
+            await onenote.llamar(onenote.navegar(anterior))
+        except OneNoteError:
+            pass
+
+
+async def _binario(nodo: jq.Nodo, callback_id: str) -> str:
+    try:
+        return await onenote.llamar(onenote.binario(nodo.id, callback_id))
+    except OneNoteError as e:
+        if not es_codigo(e, BINARIO_NO_DESCARGADO):
+            raise
+    if nodo.id not in _descargadas:
+        await _descargar_pagina(nodo)
+    # Esperar a que OneNote termine de bajar la imagen (hasta ~15 s)
+    ultimo: Exception | None = None
+    for _ in range(30):
+        await asyncio.sleep(0.5)
+        try:
+            return await onenote.llamar(onenote.binario(nodo.id, callback_id))
+        except OneNoteError as e:
+            if not es_codigo(e, BINARIO_NO_DESCARGADO):
+                raise
+            ultimo = e
+    raise OneNoteError(
+        "La imagen todavía no se ha descargado de la nube. Comprueba que OneNote tenga conexión "
+        "e inténtalo de nuevo en unos segundos."
+    ) from ultimo
+
+
+async def _imagen(nodo: jq.Nodo, img: lectura.ImagenRef) -> Image:
+    if not img.callback_id:
+        raise OneNoteError(f"La imagen {img.numero} no tiene datos accesibles.")
+    b64 = await _binario(nodo, img.callback_id)
+    datos, formato = imagenes.preparar(b64)
+    return Image(data=datos, format=formato)
+
+
+@mcp.tool(annotations=SOLO_LECTURA, structured_output=False)
+@amable
+async def leer_pagina(
+    pagina: Annotated[str, Field(description="Página: nombre, ruta parcial ('Sección / Página') o ID.")],
+    incluir_imagenes: Annotated[bool, Field(
+        description="Adjuntar las imágenes para verlas. Si es False solo se incluye su texto reconocido (OCR), "
+                    "que suele bastar para capturas de texto.")] = False,
+    max_imagenes: Annotated[int, Field(ge=0, le=30, description="Máximo de imágenes a adjuntar.")] = 6,
+) -> list:
+    """Lee una página de OneNote y la devuelve en Markdown (texto, listas, tablas, casillas y enlaces).
+
+    Las imágenes aparecen como "[🖼 Imagen N — texto reconocido: …]". Para verlas de verdad usa
+    incluir_imagenes=True o `ver_imagen` con su número.
+    """
+    nodo, pag = await _cargar_pagina(pagina)
+    cabecera = f"Ruta: {nodo.ruta}\nModificada: {jq._fmt_fecha(nodo.modificado)}\nID: {nodo.id}\n\n"
+    salida: list = [cabecera + pag.markdown]
+
+    if incluir_imagenes and pag.imagenes:
+        enviadas = await _adjuntar(nodo, pag.imagenes[:max_imagenes], salida)
+        faltan = len(pag.imagenes) - enviadas
+        if faltan > 0:
+            salida.append(f"({faltan} imagen(es) sin adjuntar; usa `ver_imagen` con su número para verlas.)")
+    elif pag.imagenes:
+        salida.append(f"(La página tiene {len(pag.imagenes)} imagen(es); usa incluir_imagenes=True o `ver_imagen` para verlas.)")
+    return salida
+
+
+async def _adjuntar(nodo: jq.Nodo, refs: list[lectura.ImagenRef], salida: list) -> int:
+    """Añade las imágenes a la salida respetando el tope de tamaño. Devuelve cuántas se adjuntaron."""
+    total = enviadas = 0
+    try:
+        for img in refs:
+            try:
+                im = await _imagen(nodo, img)
+            except Exception as e:  # noqa: BLE001 - una imagen rota no debe tumbar la respuesta
+                salida.append(f"(Imagen {img.numero}: no se pudo obtener — {e})")
+                continue
+            tam = len(im.data or b"")
+            if total + tam > MAX_BYTES_IMAGENES:
+                salida.append(f"(Límite de tamaño alcanzado en la imagen {img.numero}; pídela por separado con `ver_imagen`.)")
+                break
+            total += tam
+            enviadas += 1
+            salida += [f"Imagen {img.numero}:", im]
+    finally:
+        await _volver(nodo)  # dejar OneNote en la página que tenía el usuario
+    return enviadas
+
+
+@mcp.tool(annotations=SOLO_LECTURA, structured_output=False)
+@amable
+async def ver_imagen(
+    pagina: Annotated[str, Field(description="Página: nombre, ruta parcial o ID.")],
+    numeros: Annotated[list[int], Field(description="Números de imagen, tal como aparecen en leer_pagina (Imagen 1, 2…).")],
+) -> list:
+    """Devuelve una o varias imágenes concretas de una página para verlas."""
+    nodo, pag = await _cargar_pagina(pagina)
+    por_num = {i.numero: i for i in pag.imagenes}
+    salida: list = []
+    validas = []
+    for n in numeros:
+        if n in por_num:
+            validas.append(por_num[n])
+        else:
+            salida.append(f"La página no tiene imagen {n} (tiene {len(pag.imagenes)}).")
+    if validas:
+        await _adjuntar(nodo, validas, salida)
+    return salida
 
 
 def main() -> None:
