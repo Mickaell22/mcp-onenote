@@ -12,7 +12,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
-from . import imagenes, lectura
+from . import busqueda, imagenes, lectura
 from . import jerarquia as jq
 from .com import BINARIO_NO_DESCARGADO, OneNote, OneNoteError, es_codigo
 
@@ -278,6 +278,66 @@ async def ver_imagen(
     if validas:
         await _adjuntar(nodo, validas, salida)
     return salida
+
+
+# ---------- herramientas: búsqueda ----------
+
+indice = busqueda.Indice()
+
+
+def _ambito(nodos: list[jq.Nodo], ambito: str | None) -> list[jq.Nodo]:
+    """Páginas dentro de un cuaderno, grupo o sección (por nombre o ID); todas si no se indica."""
+    if not ambito:
+        return list(jq.todos(nodos, "pagina"))
+    for tipo in ("cuaderno", "seccion", "grupo"):
+        try:
+            raiz = jq.resolver(nodos, ambito, tipo)
+        except jq.NoEncontrado:
+            continue
+        return list(jq.todos([raiz], "pagina"))
+    raise jq.NoEncontrado(f"No hay ningún cuaderno, grupo ni sección llamado '{ambito}'.")
+
+
+@mcp.tool(annotations=SOLO_LECTURA)
+@amable
+async def buscar(
+    texto: Annotated[str, Field(description="Palabras a buscar. Deben aparecer todas; no distingue mayúsculas ni tildes.")],
+    en: Annotated[str | None, Field(description="Limitar a un cuaderno, grupo o sección (nombre o ID).")] = None,
+    max_resultados: Annotated[int, Field(ge=1, le=100)] = 15,
+) -> str:
+    """Busca texto en todas las páginas, incluido el texto reconocido (OCR) de las imágenes.
+
+    Devuelve las páginas que coinciden, de más a menos relevante, con fragmentos de contexto.
+    La primera búsqueda lee todas las páginas (puede tardar unos segundos); las siguientes solo
+    releen las que cambiaron.
+    """
+    nodos = await cuadernos(forzar=True)
+    paginas = _ambito(nodos, en)
+    errores = 0
+    for p in paginas:
+        if indice.necesita(p):
+            try:
+                xml = await onenote.llamar(onenote.contenido(p.id))
+                indice.guardar(p, lectura.leer_pagina(xml).texto_plano)
+            except OneNoteError:
+                errores += 1  # p. ej. sección bloqueada con contraseña
+    indice.olvidar_ausentes({p.id for p in jq.todos(nodos, "pagina")})
+
+    resultados = indice.buscar(paginas, texto)
+    donde = f" en '{en}'" if en else ""
+    if not resultados:
+        msg = f"Sin resultados para «{texto}»{donde} ({len(paginas)} páginas revisadas)."
+    else:
+        lineas = [f"{len(resultados)} página(s) con «{texto}»{donde}:"]
+        for r in resultados[:max_resultados]:
+            lineas.append(f"\n- {r.nodo.ruta}  ({jq._fmt_fecha(r.nodo.modificado)} · id: {r.nodo.id})")
+            lineas += [f"    {f}" for f in r.fragmentos]
+        if len(resultados) > max_resultados:
+            lineas.append(f"\n(… y {len(resultados) - max_resultados} más)")
+        msg = "\n".join(lineas)
+    if errores:
+        msg += f"\n\n({errores} página(s) no se pudieron leer, p. ej. por estar en secciones bloqueadas.)"
+    return msg
 
 
 def main() -> None:
