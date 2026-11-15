@@ -14,6 +14,7 @@ Detalles que resuelve este módulo:
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import threading
 import winreg
@@ -21,6 +22,9 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, TypeVar
 
 T = TypeVar("T")
+
+# comtypes anuncia por stderr cada módulo que genera; no aporta nada al usuario
+logging.getLogger("comtypes").setLevel(logging.WARNING)
 
 # Microsoft OneNote 15.0 Type Library (válida para OneNote 2013, 2016, 2019, 2021 y Microsoft 365)
 TYPELIB_GUID = "{0EA692EE-BB50-4E3C-AEF0-356D91732725}"
