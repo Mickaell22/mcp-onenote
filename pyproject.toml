@@ -1,0 +1,31 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "onenote-mcp"
+version = "0.1.0"
+description = "Servidor MCP para leer, buscar y escribir en OneNote de escritorio (Windows)"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [{ name = "Mickaell22" }]
+keywords = ["mcp", "onenote", "claude", "model-context-protocol"]
+classifiers = [
+  "Operating System :: Microsoft :: Windows",
+  "Programming Language :: Python :: 3",
+]
+dependencies = [
+  "mcp>=2.0",
+  "comtypes>=1.4",
+  "Pillow>=10.0",
+]
+
+[project.scripts]
+onenote-mcp = "onenote_mcp.server:main"
+
+[project.urls]
+Repository = "https://github.com/Mickaell22/onenote-mcp"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/onenote_mcp"]
